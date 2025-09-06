@@ -1,0 +1,81 @@
+name: "Build luci-app-passwall for rk3399 (rockchip/armv8, 24.10.2)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+
+env:
+  TZ: Asia/Shanghai
+  passwall_repo: ${{ github.repository }}
+  packages_repo: xiaorouji/openwrt-passwall-packages
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential clang flex bison gawk gettext \
+            libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev zstd
+
+      - name: Download SDK
+        run: |
+          wget https://downloads.openwrt.org/releases/24.10.2/targets/rockchip/armv8/openwrt-sdk-24.10.2-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          mkdir sdk && tar --zstd -xf openwrt-sdk-*.tar.zst -C sdk --strip-components=1
+
+      - name: Prepare feeds
+        run: |
+          cd sdk
+          cat > feeds.conf.default <<'EOF'
+          src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
+          src-git passwall https://github.com/${{ env.passwall_repo }}.git;${{ github.ref_name }}
+          src-git base https://github.com/openwrt/openwrt.git;openwrt-24.10
+          src-git packages https://github.com/openwrt/packages.git;openwrt-24.10
+          src-git luci https://github.com/openwrt/luci.git;openwrt-24.10
+          EOF
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Config minimal build
+        run: |
+          cd sdk
+          cat > .config <<'CONF'
+          CONFIG_PACKAGE_luci-app-passwall=m
+          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=m
+          CONFIG_PACKAGE_luci-compat=m
+          # 需要的依赖组件
+          CONFIG_PACKAGE_ipset=m
+          CONFIG_PACKAGE_ipt2socks=m
+          CONFIG_PACKAGE_microsocks=m
+          CONFIG_PACKAGE_tcping=m
+          CONF
+          make defconfig
+
+      - name: Build passwall
+        run: |
+          cd sdk
+          make package/luci-app-passwall/compile V=s -j$(nproc)
+          make package/feeds/passwall_packages/compile V=s -j$(nproc)
+
+      - name: Collect ipk
+        run: |
+          cd sdk
+          mkdir -p ../upload
+          cp -r bin/packages/*/* ../upload/
+          ls -lh ../upload
+
+      - name: Upload ipk to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "passwall-rk3399-24.10.2"
+          files: upload/**/*.ipk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
