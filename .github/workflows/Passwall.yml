@@ -1,4 +1,4 @@
-name: Build OpenWrt Passwall
+name: Build OpenWrt Passwall (Lite)
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
           sudo apt-get update
           sudo apt-get -y install build-essential clang flex bison gawk gettext \
             libncurses5-dev libssl-dev rsync unzip zlib1g-dev zstd \
-            python3 python3-pip python3-setuptools python3-wheel python3-packaging subversion
+            python3 python3-pip python3-setuptools python3-wheel python3-packaging
 
       - name: Download OpenWrt SDK (NanoPi M4 rk3399)
         run: |
@@ -32,10 +32,6 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-          # 替换官方 rust 为 rust-bin
-          rm -rf feeds/packages/lang/rust
-          svn export https://github.com/openwrt/packages/trunk/lang/rust feeds/packages/lang/rust
-
       - name: Configure .config
         run: |
           cd sdk
@@ -43,12 +39,8 @@ jobs:
           cat >> .config <<EOF
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_TUIC_Client=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server=y
           EOF
           make defconfig
 
@@ -60,5 +52,5 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: passwall-ipk
+          name: passwall-lite
           path: sdk/bin/packages/*/*/*.ipk
