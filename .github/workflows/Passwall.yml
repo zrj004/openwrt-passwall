@@ -1,4 +1,4 @@
-name: "Build luci-app-passwall for rk3399 (rockchip/armv8, 24.10.2)"
+name: "Build passwall for FriendlyWrt rockchip/armv8"
 
 on:
   workflow_dispatch:
@@ -10,72 +10,108 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  passwall_repo: ${{ github.repository }}
-  packages_repo: xiaorouji/openwrt-passwall-packages
+  passwall: xiaorouji/openwrt-passwall
+  packages: xiaorouji/openwrt-passwall-packages
+  package_names: "chinadns-ng dns2socks geoview hysteria ipt2socks microsocks naiveproxy tcping trojan-plus tuic-client shadowsocks-rust shadowsocksr-libev simple-obfs sing-box v2ray-geodata v2ray-plugin xray-core xray-plugin shadow-tls"
 
 jobs:
-  build:
+  build_rockchip_armv8:
     runs-on: ubuntu-latest
+    name: build (rockchip/armv8)
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
-
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get -y install build-essential clang flex bison gawk gettext \
-            libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev zstd
+          sudo apt-get -y install ack antlr3 asciidoc autoconf automake autopoint \
+            binutils bison build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib g++-multilib \
+            git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev \
+            libz-dev lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full \
+            patch pkgconf python3 python3-pip python3-setuptools python3-wheel \
+            python3-packaging python3-pyelftools qemu-utils re2c rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
+            xmlto xxd zlib1g-dev zstd
+          sudo apt-get clean
 
       - name: Download SDK
         run: |
           wget https://downloads.openwrt.org/releases/24.10.2/targets/rockchip/armv8/openwrt-sdk-24.10.2-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          mkdir sdk && tar --zstd -xf openwrt-sdk-*.tar.zst -C sdk --strip-components=1
+          mkdir sdk
+          tar --zstd -x -f openwrt-sdk-24.10.2-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst -C sdk --strip-components=1
 
-      - name: Prepare feeds
+      - name: Configure feeds
         run: |
           cd sdk
-          cat > feeds.conf.default <<'EOF'
+          cat > feeds.conf.default << EOF
           src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
-          src-git passwall https://github.com/${{ env.passwall_repo }}.git;${{ github.ref_name }}
+          src-git passwall https://github.com/${{ env.passwall }}.git;main
           src-git base https://github.com/openwrt/openwrt.git;openwrt-24.10
           src-git packages https://github.com/openwrt/packages.git;openwrt-24.10
           src-git luci https://github.com/openwrt/luci.git;openwrt-24.10
+          src-git routing https://github.com/openwrt/routing.git;openwrt-24.10
+          src-git telephony https://github.com/openwrt/telephony.git;openwrt-24.10
           EOF
+
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Config minimal build
+          # 更新 golang/rust (解决新版依赖问题)
+          rm -rf temp_resp
+          git clone -b master --single-branch https://github.com/openwrt/packages.git temp_resp
+          rm -rf feeds/packages/lang/golang
+          cp -r temp_resp/lang/golang feeds/packages/lang
+          rm -rf feeds/packages/lang/rust
+          cp -r temp_resp/lang/rust feeds/packages/lang
+          rm -rf temp_resp
+
+      - name: Configure build
         run: |
           cd sdk
-          cat > .config <<'CONF'
-          CONFIG_PACKAGE_luci-app-passwall=m
-          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=m
-          CONFIG_PACKAGE_luci-compat=m
-          # 需要的依赖组件
-          CONFIG_PACKAGE_ipset=m
-          CONFIG_PACKAGE_ipt2socks=m
-          CONFIG_PACKAGE_microsocks=m
-          CONFIG_PACKAGE_tcping=m
-          CONF
+          echo "CONFIG_ALL_NONSHARED=n" > .config
+          echo "CONFIG_ALL_KMODS=n" >> .config
+          echo "CONFIG_ALL=n" >> .config
+          echo "CONFIG_AUTOREMOVE=n" >> .config
+          echo "CONFIG_SIGNED_PACKAGES=n" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Trojan_Plus=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Client=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadowsocks_Rust_Server=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ShadowsocksR_Libev_Client=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_ShadowsocksR_Libev_Server=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Simple_Obfs=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_tuic_client=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Geodata=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Shadow_TLS=y" >> .config
           make defconfig
 
-      - name: Build passwall
+      - name: Compile
         run: |
           cd sdk
-          make package/luci-app-passwall/compile V=s -j$(nproc)
-          make package/feeds/passwall_packages/compile V=s -j$(nproc)
+          for package in ${{ env.package_names }}; do
+            if [ -d "feeds/passwall_packages/$package" ]; then
+              echo ">>> Compiling $package"
+              make package/feeds/passwall_packages/$package/compile -j$(nproc) V=s
+            fi
+          done
+          make package/luci-app-passwall/compile -j$(nproc) V=s
 
-      - name: Collect ipk
+      - name: Collect artifacts
         run: |
           cd sdk
-          mkdir -p ../upload
-          cp -r bin/packages/*/* ../upload/
-          ls -lh ../upload
+          mkdir upload
+          cp bin/packages/*/passwall_packages/*.ipk upload/ || true
+          cp bin/packages/*/base/*.ipk upload/ || true
+          cp bin/packages/*/luci/*.ipk upload/ || true
 
-      - name: Upload ipk to Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: "passwall-rk3399-24.10.2"
-          files: upload/**/*.ipk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: passwall-rockchip-armv8
+          path: sdk/upload
