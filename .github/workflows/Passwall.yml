@@ -1,56 +1,183 @@
-name: Build OpenWrt Passwall (Lite)
+name: "Auto compile Passwall for FriendlyWrt"
 
 on:
   workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: 'false'
+
+env:
+  TZ: Asia/Shanghai
+  passwall: ${{ github.repository }}
+  packages: xiaorouji/openwrt-passwall-packages
+  package_names: "chinadns-ng dns2socks geoview hysteria ipt2socks microsocks naiveproxy tcping trojan-plus tuic-client shadowsocks-rust shadowsocksr-libev simple-obfs sing-box v2ray-geodata v2ray-plugin xray-core xray-plugin shadow-tls"
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-
+  job_check:
+    name: Check Version
+    runs-on: ubuntu-latest
+    outputs:
+      passwall_version: ${{ steps.check_version.outputs.latest_version }}
+      has_update: ${{ steps.check_version.outputs.has_update }}
+      prerelease: ${{ steps.check_version.outputs.prerelease }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@main
+        with:
+          fetch-depth: 0
 
-      - name: Install build deps
+      - name: Check version
+        id: check_version
+        env:
+          url_tags: https://api.github.com/repos/${{ env.passwall }}/tags
+        run: |
+          cd luci-app-passwall
+          latest_version=$(awk -F ':=' '/PKG_VERSION|PKG_RELEASE/ {print $2}' Makefile | sed ':a;N;s/\$(PKG_VERSION)-//;s/\n$//;s/\n/-/;ba')
+          has_update=$([ -z "$(wget -qO- -t1 -T2 ${{env.url_tags}} | grep \"${latest_version}\")" ] && echo true || echo false)
+          prerelease=$([ "${{ github.ref_name }}" == "main" ] && echo false || echo true)
+          echo "latest_version=${latest_version}" >> $GITHUB_OUTPUT
+          echo "has_update=${has_update}" >> $GITHUB_OUTPUT
+          echo "prerelease=${prerelease}" >> $GITHUB_OUTPUT
+
+  job_auto_compile:
+    if: ${{ needs.job_check.outputs.has_update == 'true' && needs.job_check.outputs.prerelease == 'false' }}
+    needs: job_check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: aarch64_generic
+            url_sdk: https://downloads.openwrt.org/releases/24.10.1/targets/rockchip/armv8/openwrt-sdk-24.10.1-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+            sdk_ver: "24.10"
+
+    steps:
+      - name: Install packages and python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get -y install build-essential clang flex bison gawk gettext \
-            libncurses5-dev libssl-dev rsync unzip zlib1g-dev zstd \
-            python3 python3-pip python3-setuptools python3-wheel python3-packaging
+          sudo apt-get -y install \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext \
+            gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 \
+            libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool libyaml-dev libz-dev \
+            lld llvm lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python3 \
+            python3-pip python3-ply python3-docutils python3-pyelftools python3-setuptools swig \
+            qemu-utils re2c rsync scons squashfs-tools subversion texinfo uglifyjs upx-ucl unzip vim \
+            wget xmlto xxd zlib1g-dev zstd
+          sudo apt-get -qq autoremove --purge
+          sudo apt-get -qq clean
 
-      - name: Download OpenWrt SDK (NanoPi M4 rk3399)
+      - name: Download SDK
         run: |
-          wget https://downloads.openwrt.org/releases/24.10.1/targets/rockchip/armv8/openwrt-sdk-24.10.1-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          tar -I zstd -xvf openwrt-sdk-24.10.1-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          mv openwrt-sdk-24.10.1-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64 sdk
+          wget ${{ matrix.url_sdk }}
+          file_name=$(echo ${{ matrix.url_sdk }} | awk -F/ '{print $NF}')
+          mkdir sdk
+          if [[ $file_name == *.tar.xz ]]; then
+            tar -xJf $file_name -C ./sdk --strip-components=1
+          elif [[ $file_name == *.tar.zst ]]; then
+            tar --zstd -x -f $file_name -C ./sdk --strip-components=1
+          else
+            echo "Unsupported file format: $file_name"
+            exit 1
+          fi
+          cd sdk
 
-      - name: Update feeds
+      - name: Configure feeds
         run: |
           cd sdk
-          echo "src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages" >> feeds.conf.default
-          echo "src-git passwall https://github.com/xiaorouji/openwrt-passwall" >> feeds.conf.default
+          cat > feeds.conf.default << EOF
+          src-git passwall_packages https://github.com/xiaorouji/openwrt-passwall-packages.git;main
+          src-git passwall https://github.com/${{ env.passwall }}.git;${{ github.ref_name }}
+          src-git base https://github.com/openwrt/openwrt.git;openwrt-${{ matrix.sdk_ver }}
+          src-git packages https://github.com/openwrt/packages.git;openwrt-${{ matrix.sdk_ver }}
+          src-git luci https://github.com/openwrt/luci.git;openwrt-${{ matrix.sdk_ver }}
+          src-git routing https://github.com/openwrt/routing.git;openwrt-${{ matrix.sdk_ver }}
+          src-git telephony https://github.com/openwrt/telephony.git;openwrt-${{ matrix.sdk_ver }}
+          EOF
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Configure .config
+      - name: Apply golang & rust patches
         run: |
           cd sdk
-          rm -f .config
-          cat >> .config <<EOF
-          CONFIG_PACKAGE_luci-app-passwall=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Hysteria=y
-          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_NaiveProxy=y
-          EOF
+          rm -rf temp_resp
+          git clone -b master --single-branch https://github.com/openwrt/packages.git temp_resp
+          rm -rf feeds/packages/lang/golang
+          cp -r temp_resp/lang/golang feeds/packages/lang
+          rm -rf feeds/packages/lang/rust
+          cp -r temp_resp/lang/rust feeds/packages/lang
+          rm -rf temp_resp
+          sed -i 's/--set=llvm\.download-ci-llvm=false/--set=llvm.download-ci-llvm=true/' feeds/packages/lang/rust/Makefile
+          grep -q -- '--ci false \\' feeds/packages/lang/rust/Makefile || sed -i '/x\.py \\/a \        --ci false \\' feeds/packages/lang/rust/Makefile
+
+      - name: Initialize SDK .config
+        run: |
+          cd sdk
+          echo "CONFIG_ALL_NONSHARED=n" > .config
+          echo "CONFIG_ALL_KMODS=n" >> .config
+          echo "CONFIG_ALL=n" >> .config
+          echo "CONFIG_AUTOREMOVE=n" >> .config
+          echo "CONFIG_SIGNED_PACKAGES=n" >> .config
+          echo "CONFIG_PACKAGE_u-boot-rockchip=n" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall=m" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_V2ray_Plugin=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y" >> .config
           make defconfig
 
-      - name: Build
+      - name: Download sources
         run: |
           cd sdk
-          make package/luci-app-passwall/compile -j$(nproc) V=sc
+          make download -j8
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Compile passwall packages
+        id: compile
+        run: |
+          cd sdk
+          for package in ${{ env.package_names }}; do
+              if [ -d "feeds/passwall_packages/$package" ]; then
+                  echo "Compiling $package"
+                  make package/feeds/passwall_packages/$package/compile -j$(nproc) V=s
+              fi
+          done
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Generate release.txt
+        run: |
+          cd sdk
+          echo "## :mega:Update content" > release.txt
+          echo "![](https://img.shields.io/github/downloads/${{ env.passwall }}/${{needs.job_check.outputs.passwall_version}}/total?style=flat-square)" >> release.txt
+          echo "### Passwall Info" >> release.txt
+          echo "**:minidisc: Passwall Version: ${{needs.job_check.outputs.passwall_version}}**" >> release.txt
+          echo "### Packages Version" >> release.txt
+          echo "**package name**|**package version**" >> release.txt
+          echo "-|-" >> release.txt
+          pkgs=$(ls feeds/passwall_packages -I v2ray-geodata | grep -E "$(echo "${{ env.package_names }}" | sed 's/ /|/g')")
+          for pkg in $pkgs; do
+            version=$(awk -F ':=' '/PKG_VERSION:=/{print $2}' feeds/passwall_packages/$pkg/Makefile | sed 's/\r//g')
+            [ -z "${version}" ] && version=$(awk -F ':=' '/PKG_SOURCE_DATE:=/{print $2}' feeds/passwall_packages/$pkg/Makefile | sed 's/\r//g')
+            echo "**:ice_cube: $pkg**|**${version}**" >> release.txt
+          done
+          echo "**:ice_cube: v2ray-geoip**|**$(awk -F ':=' '/GEOIP_VER:=/{print $2}' feeds/passwall_packages/v2ray-geodata/Makefile)**" >> release.txt
+          echo "**:ice_cube: v2ray-geosite**|**$(awk -F ':=' '/GEOSITE_VER:=/{print $2}' feeds/passwall_packages/v2ray-geodata/Makefile)**" >> release.txt
+
+      - name: Organize files
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd sdk
+          mkdir -p upload
+          zip -jr upload/passwall_packages_ipk_${{ matrix.platform }}.zip bin/packages/*/passwall_packages/*.ipk
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+
+      - name: Upload release
+        if: steps.compile.outputs.status == 'success'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: passwall-lite
-          path: sdk/bin/packages/*/*/*.ipk
+          tag_name: ${{needs.job_check.outputs.passwall_version}}
+          body_path: ${{ env.FIRMWARE }}/release.txt
+          files: ${{ env.FIRMWARE }}/upload/*
